@@ -18,7 +18,7 @@ $(OUTPUT): $(SRC)
 
 # Rule to clean the compiled files
 clean:
-	del /F /Q $(OUTPUT).exe binary_data.txt 2>nul || echo "No file to delete"
+	del /F /Q $(OUTPUT).exe binary_data.txt output_image.png 2>nul || echo "No file to delete"
 
 # Rule to run the program after compilation
 run: $(OUTPUT)
