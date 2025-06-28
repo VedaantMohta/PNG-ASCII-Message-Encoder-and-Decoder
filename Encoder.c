@@ -75,10 +75,10 @@ char *image_to_binary(unsigned char *image, int width, int height, int channels,
 }
 
 /**
- * Converts a message (string) into its binary representation.
+ * Converts a given message into its binary representation.
  *
- * @param message The message to be converted into binary.
- * @return A string containing the binary representation of the message.
+ * @param message The ASCII message to be converted into binary.
+ * @return The binary representation of the message as a string.
  */
 char *messageToBinary(const char *message) {
     int length = strlen(message);
@@ -103,40 +103,70 @@ char *messageToBinary(const char *message) {
 
 /**
  * Encodes a binary string with the given message and appends the checksum.
+ * This function is now modified to correctly embed individual bits of the message.
  *
  * @param binary_data The binary data to which the message is to be encoded.
  * @param message The message to be encoded in binary.
  * @return The binary string with the encoded message and checksum appended.
  */
 char *encode_binary(char *binary_data, const char *message) {
-    // Convert message to binary
     char *binary_message = messageToBinary(message);
-    unsigned char checksum = calculate_checksum(binary_message, strlen(binary_message));
-    free(binary_message);  // Free the binary message as it's no longer needed
-    
-    int i = 0;
-    // Encode the message in binary and append to binary_data
-    while (message[i] != '\0') {
-        binary_data[(i + 1) * 8 - 1] = message[i];
-        i++;
-    }
-    
-    // Convert checksum to binary and append to binary_data
-    for (int j = 0; j < 8; j++) {
-        binary_data[(i + 1) * 8 - 1] = ((checksum >> (7 - j)) & 1) ? '1' : '0';
-        i++;
-    }
-    
-    // Append an end marker (8 bits)
-    char end[] = "00000111";
-    int j = 0;
-    while (end[j] != '\0') {
-        binary_data[(i + 1) * 8 - 1] = end[j];
-        i++;
-        j++;
+    if (!binary_message) {
+        return NULL;
     }
 
-    return binary_data;
+    // Convert checksum to binary string
+    unsigned char checksum_val = calculate_checksum(binary_message, strlen(binary_message));
+    char checksum_binary[9]; // 8 bits + null terminator
+    for (int j = 0; j < 8; j++) {
+        checksum_binary[j] = ((checksum_val >> (7 - j)) & 1) ? '1' : '0';
+    }
+    checksum_binary[8] = '\0';
+
+    char end_marker_binary[] = "00000111"; // ASCII for BEL character (Bell)
+
+    int message_bits_len = strlen(binary_message);
+    int checksum_bits_len = strlen(checksum_binary);
+    int end_marker_bits_len = strlen(end_marker_binary);
+
+    int total_bits_to_embed = message_bits_len + checksum_bits_len + end_marker_bits_len;
+
+    int original_image_binary_len = strlen(binary_data); // Total number of '0'/'1' characters for the image
+
+    // Check if the image is large enough to embed the entire message + checksum + end marker
+    // We modify 1 LSB per 8-bit component representation in binary_data.
+    // So, we need at least `total_bits_to_embed` LSB positions.
+    if (original_image_binary_len < (total_bits_to_embed * 8)) { // Must have enough `char`s in `binary_data`
+        printf("Error: Image is too small to embed the message. Needs at least %d pixel LSBs (total %d image binary bits).\n", 
+               total_bits_to_embed, total_bits_to_embed * 8);
+        free(binary_message);
+        return NULL;
+    }
+
+    int current_embed_idx = 0; // Index for bits in `binary_message` / `checksum_binary` / `end_marker_binary`
+    int binary_data_lsb_idx = 7; // Index for LSB position in `binary_data` (0-7 for first byte, 8-15 for second, etc.)
+
+    // Embed message bits
+    for (int i = 0; i < message_bits_len; i++) {
+        // Embed the actual bit from binary_message (e.g., '0' or '1')
+        binary_data[binary_data_lsb_idx] = binary_message[current_embed_idx++];
+        binary_data_lsb_idx += 8; // Move to the LSB of the next 8-bit component
+    }
+
+    // Embed checksum bits
+    for (int i = 0; i < checksum_bits_len; i++) {
+        binary_data[binary_data_lsb_idx] = checksum_binary[i];
+        binary_data_lsb_idx += 8;
+    }
+
+    // Embed end marker bits
+    for (int i = 0; i < end_marker_bits_len; i++) {
+        binary_data[binary_data_lsb_idx] = end_marker_binary[i];
+        binary_data_lsb_idx += 8;
+    }
+    
+    free(binary_message);
+    return binary_data; // Return the modified binary_data string
 }
 
 /**
@@ -157,12 +187,21 @@ unsigned char *binary_to_image(char *binary_data, int width, int height, int cha
     }
 
     int binary_index = 0;
+    // Store strlen(binary_data) once to avoid repeated calls in the loop (PERFORMANCE FIX)
+    size_t binary_data_len = strlen(binary_data); 
+
     // Convert binary data back to image format
     for (int y = 0; y < height; y++) {
         for (int x = 0; x < width; x++) {
             for (int c = 0; c < channels; c++) {
                 unsigned char pixel_value = 0;
                 for (int i = 0; i < 8; i++) {
+                    // Ensure we don't read beyond the allocated binary_data
+                    if (binary_index >= binary_data_len) { 
+                        printf("Warning: Ran out of binary data before filling image pixels. Image might be incomplete.\n");
+                        free(image); 
+                        return NULL;
+                    }
                     pixel_value = (pixel_value << 1) | (binary_data[binary_index++] - '0');
                 }
                 image[(y * width + x) * channels + c] = pixel_value;
@@ -183,8 +222,8 @@ unsigned char *binary_to_image(char *binary_data, int width, int height, int cha
  */
 char *decode_image(char *image, int width, int height, int channels) {
     int length = strlen(image);
-    int result_length = (length / 8);
-    char *result = (char *)malloc(result_length + 1);
+    // Allocate memory for the potential decoded message (max possible bits = total LSBs in image data)
+    char *result = (char *)malloc((length / 8) + 1); 
     
     if (!result) {
         printf("Memory allocation failed!\n");
@@ -194,7 +233,6 @@ char *decode_image(char *image, int width, int height, int channels) {
     int result_index = 0;
     char byte[9];
     unsigned char extracted_checksum = 0;
-    char *message_content = NULL;
     
     for (int i = 7; i < length; i += 8) {
         result[result_index++] = image[i];
@@ -205,19 +243,40 @@ char *decode_image(char *image, int width, int height, int channels) {
             
             // Check for end marker in the binary data
             if (strcmp(byte, "00000111") == 0) {
-                // Extract message (excluding checksum and end marker)
-                int message_length = result_index - 16; // 8 bits for checksum, 8 bits for end marker
-                message_content = (char *)malloc(message_length + 1);
-                memcpy(message_content, result, message_length);
-                message_content[message_length] = '\0';
-                
-                // Extract checksum (8 bits) from the decoded data
-                for (int j = 0; j < 8; j++) {
-                    extracted_checksum = (extracted_checksum << 1) | (result[message_length + j] - '0');
+                // End marker found.
+                // The structure is: [MESSAGE BITS] [CHECKSUM BITS (8)] [END MARKER BITS (8)]
+                // `result_index` now includes the 8 bits of the end marker.
+
+                // Ensure enough bits for checksum (8) + end marker (8)
+                if (result_index < 16) { 
+                    printf("Error: End marker found, but not enough preceding data for checksum (requires 16 bits).\n");
+                    free(result);
+                    return NULL;
                 }
-                
-                // Calculate checksum of the message content
-                unsigned char calculated_checksum = calculate_checksum(message_content, strlen(message_content));
+
+                // Extract checksum (8 bits just before the end marker)
+                strncpy(byte, result + result_index - 16, 8);
+                byte[8] = '\0';
+                extracted_checksum = 0;
+                for (int k = 0; k < 8; k++) {
+                    extracted_checksum = (extracted_checksum << 1) | (byte[k] - '0');
+                }
+
+                // The message bits are everything before the checksum
+                int message_bit_length = result_index - 16;
+                if (message_bit_length < 0) { 
+                    // This scenario should ideally be caught by the result_index < 16 check above,
+                    // but as a safeguard.
+                    printf("Error: Negative message length calculated after extraction.\n");
+                    free(result);
+                    return NULL;
+                }
+
+                // Null-terminate the result string at the end of the actual message bits
+                result[message_bit_length] = '\0';
+
+                // Calculate checksum of the extracted message content (which is still in binary string format)
+                unsigned char calculated_checksum = calculate_checksum(result, message_bit_length);
                 
                 // Verify the checksum
                 if (calculated_checksum != extracted_checksum) {
@@ -227,15 +286,15 @@ char *decode_image(char *image, int width, int height, int channels) {
                     printf("Checksum verification successful!\n");
                 }
                 
-                result[message_length] = '\0';
-                free(message_content);
-                return result;
+                return result; // Return the binary string of the message
             }
         }
     }
 
-    result[result_index] = '\0';
-    return result;
+    // If end marker is NOT found after iterating through all possible LSBs
+    printf("Error: End marker '00000111' not found in the image's LSBs.\n");
+    free(result); // Free the allocated memory since no message was found
+    return NULL;
 }
 
 /**
@@ -276,114 +335,199 @@ char *binaryToAscii(const char *binary_data) {
 }
 
 int main() {
-    // Declare variables to hold image properties: width, height, and number of channels
+    // Declare pointers for dynamically allocated memory, initialized to NULL for safety
+    unsigned char *image = NULL;
+    char *binary_image_data = NULL;
+    unsigned char *reconstructed_image = NULL;
+    char *decoded_binary_message = NULL;
+    char *ascii_message = NULL;
+
+    // Declare necessary integer variables for image properties
     int width, height, channels;
+    int binary_size; // Declare binary_size here
 
-    // Define file names for input and output images
-    const char *input_filename = "images/IMAGEASCII.png";  // Input image
-    const char *output_filename = "output_image.png";      // Output image after encoding the message
+    char input_filename_buffer[256];
+    char output_filename_buffer[256];
+    char choice_str[10];
+    char message_to_encode[1024]; // Increased buffer for message
 
-    // Load the image using the stb_image library
-    unsigned char *image = stbi_load(input_filename, &width, &height, &channels, 0);
-    if (image == NULL) {  // Check if image loading was successful
-        printf("Failed to load image\n");  // Display an error message if the image could not be loaded
-        return 1;  // Return non-zero to indicate failure
+    printf("Welcome to the Image Steganography CLI!\n");
+    printf("Press 'q' at any time to quit.\n\n"); // Display quit instruction once at the beginning
+
+    while (1) { // Main program loop
+        // Reset pointers for current iteration to ensure clean state and avoid double-free issues
+        image = NULL;
+        binary_image_data = NULL;
+        reconstructed_image = NULL;
+        decoded_binary_message = NULL;
+        ascii_message = NULL;
+
+        // --- Get input image filename ---
+        printf("Enter the input image filename (e.g., images/IMAGEASCII.png): ");
+        if (fgets(input_filename_buffer, sizeof(input_filename_buffer), stdin) == NULL) {
+            printf("ERROR: Failed to read input filename.\n");
+            goto cleanup_iteration_and_continue; // Go to cleanup and continue loop
+        }
+        input_filename_buffer[strcspn(input_filename_buffer, "\n")] = 0; // Remove trailing newline
+
+        if (strcmp(input_filename_buffer, "q") == 0 || strcmp(input_filename_buffer, "Q") == 0) {
+            printf("Quitting program.\n");
+            goto full_program_exit; // Exit the while loop
+        }
+
+        // --- Ask user to choose encode/decode ---
+        printf("\nDo you want to (1) Encode or (2) Decode a message? (Enter 1 or 2): ");
+        if (fgets(choice_str, sizeof(choice_str), stdin) == NULL) {
+            printf("ERROR: Failed to read choice.\n");
+            goto cleanup_iteration_and_continue; // Go to cleanup and continue loop
+        }
+        choice_str[strcspn(choice_str, "\n")] = 0; // Remove trailing newline
+
+        if (strcmp(choice_str, "q") == 0 || strcmp(choice_str, "Q") == 0) {
+            printf("Quitting program.\n");
+            goto full_program_exit; // Exit the while loop
+        }
+        int choice = atoi(choice_str);
+        printf("\n"); // Add newline for spacing
+
+        // --- Load image ---
+        image = stbi_load(input_filename_buffer, &width, &height, &channels, 0);
+        if (image == NULL) {
+            printf("ERROR: Failed to load image '%s'. Please ensure the file exists and is accessible.\n", input_filename_buffer);
+            goto cleanup_iteration_and_continue; // Go to cleanup and continue loop
+        }
+        printf("Image '%s' loaded successfully! Dimensions: %d x %d, Channels: %d\n", input_filename_buffer, width, height, channels);
+
+        // --- Convert image to binary data ---
+        binary_image_data = image_to_binary(image, width, height, channels, &binary_size);
+        stbi_image_free(image); // Free original image data
+        image = NULL; // Set to NULL after freeing
+        if (!binary_image_data) {
+            printf("ERROR: Failed to convert image to binary data.\n");
+            goto cleanup_iteration_and_continue; // Go to cleanup and continue loop
+        }
+
+        if (choice == 1) { // Encode path
+            // Calculate max character length based on the image's binary data
+            int total_lsb_positions = strlen(binary_image_data) / 8; 
+            int overhead_bits = 8 + 8; // 8 bits for checksum, 8 bits for end marker
+            int available_message_bits = total_lsb_positions - overhead_bits;
+            int max_char_length = available_message_bits / 8; // Each char is 8 bits
+
+            if (max_char_length <= 0) {
+                printf("ERROR: The image is too small to encode any message. (Needs at least %d LSB positions for overhead, has %d available).\n", overhead_bits, total_lsb_positions);
+                goto cleanup_iteration_and_continue;
+            }
+            
+            printf("--- Encoding Mode ---\n"); // Section header
+            printf("Maximum message length: %d characters.\n", max_char_length); // Clearer label
+            
+            while (1) { // Loop for message input
+                printf("Enter the message you want to encode: ");
+                if (fgets(message_to_encode, sizeof(message_to_encode), stdin) == NULL) {
+                    printf("ERROR: Failed to read message.\n");
+                    goto cleanup_iteration_and_continue;
+                }
+                message_to_encode[strcspn(message_to_encode, "\n")] = 0; // Remove trailing newline
+
+                if (strcmp(message_to_encode, "q") == 0 || strcmp(message_to_encode, "Q") == 0) {
+                    printf("Quitting program.\n");
+                    goto full_program_exit;
+                }
+
+                if (strlen(message_to_encode) * 8 > available_message_bits) {
+                    printf("WARNING: Message is too long! Please enter a message up to %d characters.\n", max_char_length);
+                } else {
+                    break; // Valid message, exit inner loop
+                }
+            }
+
+            printf("Enter the output filename for the encoded image (e.g., output_encoded.png): ");
+            if (fgets(output_filename_buffer, sizeof(output_filename_buffer), stdin) == NULL) {
+                printf("ERROR: Failed to read output filename.\n");
+                goto cleanup_iteration_and_continue;
+            }
+            output_filename_buffer[strcspn(output_filename_buffer, "\n")] = 0; // Remove trailing newline
+
+            if (strcmp(output_filename_buffer, "q") == 0 || strcmp(output_filename_buffer, "Q") == 0) {
+                printf("Quitting program.\n");
+                goto full_program_exit;
+            }
+
+            // Call encode_binary with the original binary_data and user's message
+            char *encoded_binary_data = encode_binary(binary_image_data, message_to_encode); 
+            if (!encoded_binary_data) {
+                printf("ERROR: Failed to encode message into binary data.\n");
+                goto cleanup_iteration_and_continue;
+            }
+            // binary_image_data now holds the encoded data.
+
+            // Reconstruct the image from the modified binary data
+            reconstructed_image = binary_to_image(encoded_binary_data, width, height, channels);
+            if (!reconstructed_image) {
+                printf("ERROR: Failed to reconstruct image from binary data.\n");
+                goto cleanup_iteration_and_continue;
+            }
+
+            // Save the reconstructed image
+            if (!stbi_write_png(output_filename_buffer, width, height, channels, reconstructed_image, width * channels)) {
+                printf("ERROR: Failed to write encoded image to '%s'. Ensure you have write permissions.\n", output_filename_buffer);
+                goto cleanup_iteration_and_continue;
+            }
+
+            printf("\nSUCCESS: Message successfully encoded and image saved to '%s'\n", output_filename_buffer);
+            goto cleanup_iteration_and_continue; // Go to cleanup and continue loop
+
+        } else if (choice == 2) { // Decode
+            printf("--- Decoding Mode ---\n"); // Section header
+            printf("Attempting to decode message...\n");
+            // Call decode_image to extract the binary message
+            decoded_binary_message = decode_image(binary_image_data, width, height, channels);
+            
+            // binary_image_data is consumed by decode_image logic, so free it here.
+            // If decode_image returns NULL, it has already freed its internal 'result' memory.
+            if (binary_image_data) free(binary_image_data); 
+            binary_image_data = NULL; // Set to NULL after freeing
+
+            if (!decoded_binary_message) {
+                printf("RESULT: No message found encoded in this image or decoding failed (e.g., end marker not found, corrupted data).\n");
+                goto cleanup_iteration_and_continue; // Go to cleanup and continue loop
+            }
+            
+            // Convert the decoded binary message to ASCII
+            ascii_message = binaryToAscii(decoded_binary_message);
+            if (!ascii_message) {
+                printf("ERROR: Failed to convert decoded binary message to ASCII.\n");
+                goto cleanup_iteration_and_continue; // Go to cleanup and continue loop
+            }
+
+            printf("Decoded message: \"%s\"\n", ascii_message);
+            goto cleanup_iteration_and_continue; // Go to cleanup and continue loop
+
+        } else { // Invalid choice
+            printf("ERROR: Invalid choice. Please enter '1' for Encode or '2' for Decode.\n");
+            goto cleanup_iteration_and_continue; // Go to cleanup and continue loop
+        }
+
+    cleanup_iteration_and_continue:
+        // Centralized cleanup for memory allocated within this specific iteration
+        // These checks are crucial because some pointers might be NULL already if freed earlier or due to error paths.
+        if (image) free(image); 
+        if (binary_image_data) free(binary_image_data); // Will be freed here if not freed in decode path
+        if (reconstructed_image) free(reconstructed_image);
+        if (decoded_binary_message) free(decoded_binary_message);
+        if (ascii_message) free(ascii_message);
+        printf("\n----------------------------------------\n\n"); // Separator for next iteration
+        continue; // Continue to the next iteration of the main loop
+
+    full_program_exit:
+        // Final cleanup before exiting the entire program
+        // This handles cases where 'q' was pressed and some pointers might still hold data.
+        if (image) free(image);
+        if (binary_image_data) free(binary_image_data);
+        if (reconstructed_image) free(reconstructed_image);
+        if (decoded_binary_message) free(decoded_binary_message);
+        if (ascii_message) free(ascii_message);
+        return 0; // Exit the program gracefully
     }
-
-    // If the image loaded successfully, display the image dimensions and number of channels
-    printf("Image loaded successfully! %d x %d with %d channels\n", width, height, channels);
-
-    // Initialize a variable to hold the size of the binary data
-    int binary_size;
-    
-    // Convert the image to binary data (encoding the pixel values)
-    char *binary_data = image_to_binary(image, width, height, channels, &binary_size);
-    if (!binary_data) {  // If conversion fails, free the loaded image and return failure
-        stbi_image_free(image);  // Free the memory used by the loaded image
-        return 1;
-    }
-    
-    // Free the image memory as it is no longer needed
-    stbi_image_free(image);
-
-    // Convert the message into a binary format (this will be encoded in the image)
-    char *binary_message = messageToBinary("Congratulations again on completing your 2nd round technical interview! The last step of the interview process for the Flight Software team is this take-home project. You will have 7 days to complete this project, and it will be due at 11:59 PM EDT, on Thursday, February 20th. Please make your submissions via email to sl94656@uga.edu and include all your project files in a ZIP archive. This project will involve encoding an ASCII message in a PNG image without (noticeably) visually altering the image. You may choose the method by which you encrypt your data, but make a conscious effort to develop an efficient encoding method (how much text data can you pack in a single image?) and you may not utilize the metadata of the PNG to store information. The message may be one of your choosing, and the PNG image with which you will be working is attached alongside this document to the email you received. The project will be written in the C language, and your project should consist of two separate programs, one to encode the data in the image, and another to decode the data from the image. You will need to include a makefile such that a user can run 'make clean' and 'make' in the target directory and successfully compile your code. You will also include a README.md file in which you will describe how your projects work, as well as why you made certain design decisions (such as choice of encoding method, choice of data redundancy, etc.). You may use a PNG library of your choosing but be sure to justify your choice in your README. It is alright if your program is not cross-platform, but please include any necessary libraries for compilation and include which platform your program was tested on (Windows, Linux, MacOS). Your program must include some way for the decoder to detect any errors during transmission in the encoded data. (Bonus points if you implement an error correction method, but this is not required).");
-    // Pass the binary data and the message binary data to the encoder function
-    encode_binary(binary_data, binary_message);
-
-    // Free the binary message memory after it's no longer needed
-    free(binary_message);
-    
-    // Reconstruct the image with the encoded message from the binary data
-    unsigned char *reconstructed_image = binary_to_image(binary_data, width, height, channels);
-    // Free the binary data since it's now embedded in the image
-    free(binary_data);
-
-    if (!reconstructed_image) {  // If image reconstruction fails, return failure
-        return 1;
-    }
-
-    // Attempt to save the reconstructed image as a PNG file
-    if (!stbi_write_png(output_filename, width, height, channels, reconstructed_image, width * channels)) {
-        // If saving the image fails, print an error message and free the reconstructed image
-        printf("Failed to write image\n");
-        free(reconstructed_image);
-        return 1;
-    }
-
-    // If the image was saved successfully, print a success message
-    printf("Reconstructed image saved to %s\n", output_filename);
-
-    // Free the memory used by the reconstructed image
-    free(reconstructed_image);
-
-    // Now, load the image back for decoding
-    int width_1, height_1, channels_1;
-    const char *input_filename_1 = "output_image.png";  // Use the previously saved output image
-
-    unsigned char *image_1 = stbi_load(input_filename_1, &width_1, &height_1, &channels_1, 0);
-    if (image_1 == NULL) {  // Check if image loading was successful
-        printf("Failed to load image\n");
-        return 1;  // Return failure if loading fails
-    }
-
-    // Display the loaded image's dimensions and channels
-    printf("Image loaded successfully! %d x %d with %d channels\n", width_1, height_1, channels_1);
-
-    // Convert the newly loaded image back into binary data for decoding
-    int binary_size_1;
-    char *binary_data_1 = image_to_binary(image_1, width_1, height_1, channels_1, &binary_size_1);
-    if (!binary_data_1) {  // If conversion fails, free the loaded image and return failure
-        stbi_image_free(image_1);
-        return 1;
-    }
-    
-    // Free the image memory since it is no longer needed
-    stbi_image_free(image_1);
-
-    // Decode the binary data into the original message's binary form
-    char *message_binary_1 = decode_image(binary_data_1, width_1, height_1, channels_1);
-    if (!message_binary_1) {  // If decoding fails, free the binary data and return failure
-        free(binary_data_1);
-        return 1;
-    }
-    
-    // Convert the decoded binary message back to ASCII text
-    char *ascii_message_1 = binaryToAscii(message_binary_1);
-    if (!ascii_message_1) {  // If the conversion fails, free the allocated memory and return failure
-        free(binary_data_1);
-        free(message_binary_1);
-        return 1;
-    }
-
-    // Print the decoded ASCII message
-    printf("Decoded ASCII message: %s\n", ascii_message_1);
-
-    // Free the allocated memory for binary data, message binary, and decoded ASCII message
-    free(binary_data_1);
-    free(message_binary_1);
-    free(ascii_message_1);
-
-    // Return success (0) to indicate the program completed without errors
-    return 0;
 }
