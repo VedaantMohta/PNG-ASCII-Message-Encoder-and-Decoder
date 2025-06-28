@@ -5,10 +5,10 @@ CC = gcc
 CFLAGS = -Wall -g
 
 # Output executable
-OUTPUT = Encoder
+OUTPUT = Steganography_CLI_Tool
 
 # Source file
-SRC = Encoder.c
+SRC = Steganography_CLI_Tool.c
 
 # Rule to build the program
 all: $(OUTPUT)
@@ -18,7 +18,7 @@ $(OUTPUT): $(SRC)
 
 # Rule to clean the compiled files
 clean:
-	del /F /Q $(OUTPUT).exe output_image.png 2>nul
+	del /F /Q $(OUTPUT).exe 2>nul
 
 # Rule to run the program after compilation
 run: $(OUTPUT)
