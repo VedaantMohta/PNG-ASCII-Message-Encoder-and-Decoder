@@ -15,8 +15,8 @@ A high-performance C-based CLI tool that securely embeds and extracts ASCII mess
 
 ### Choice of Encoding Method
 The encoding method used in this project is a substitution technique where the least significant bit (LSB) of each pixel in the image is replaced with a bit of the message. This method was chosen because:
-1. It introduces minimal changes to the image, making the hidden message less noticeable. Since only one LSB is modified, the values of RGBA are only altered by 1 out of 255.
-2. It is efficient in terms of processing time and computational resources.
+- It introduces minimal changes to the image, making the hidden message less noticeable. Since only one LSB is modified, the values of RGBA are only altered by 1 out of 255.
+- It is efficient in terms of processing time and computational resources.
 
 ### Data Integrity: XOR Checksum
 Before embedding, a simple XOR checksum is computed over the entire binary message and appended. Upon decoding, the checksum is recalculated and compared to detect corruption — ensuring message reliability without external libraries.
@@ -26,9 +26,9 @@ A fixed 8-bit binary marker (00000111, ASCII Bell) is embedded after the checksu
 
 ### Image Processing: stb_image
 The project uses the [stb_image](https://github.com/nothings/stb) library for loading and writing PNG images. The stb_image library was chosen because:
-1. Header-only simplicity — no linking required.
-2. Raw pixel access — essential for precise bit manipulation.
-3. Cross-platform compatibility — works on Windows, macOS, Linux.
+- Header-only simplicity — no linking required.
+- Raw pixel access — essential for precise bit manipulation.
+- Cross-platform compatibility — works on Windows, macOS, Linux.
 
 ### Language: C
 C was selected for performance and control:
